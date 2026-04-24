@@ -1,4 +1,4 @@
-use crate::common::{MAP_HEIGHT, MAP_WIDTH, TILE_EXIT, TILE_FLOOR, TILE_WALL};
+use crate::common::{MAP_HEIGHT, MAP_WIDTH, TILE_FLOOR, TILE_WALL};
 use crate::dungeon::World;
 
 pub struct Player {
@@ -31,7 +31,7 @@ impl Player {
         let nx = nx as usize;
 
         let tile = world.map[ny][nx];
-        if tile == TILE_WALL || tile == TILE_EXIT {
+        if tile == TILE_WALL {
             return false;
         }
 
