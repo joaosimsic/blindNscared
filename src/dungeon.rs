@@ -1,4 +1,4 @@
-    use crate::common::{Rect, Room, TILE_FLOOR, TILE_WALL};
+    use crate::common::{Rect, Room, TILE_FLOOR, TILE_WALL, TILE_EXIT};
 
 pub struct World {
     pub map: Vec<Vec<char>>,
