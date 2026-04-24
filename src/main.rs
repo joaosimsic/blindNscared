@@ -1,13 +1,15 @@
 mod common;
+mod dungeon;
 mod player;
 mod render;
-mod wfc;
 
 use crossterm::event::{self, Event, KeyCode};
 use crossterm::terminal;
+use dungeon::World;
 use player::Player;
 use std::io;
-use wfc::World;
+
+use crate::common::{MAP_HEIGHT, MAP_WIDTH};
 
 struct RawGuard;
 
@@ -27,7 +29,7 @@ impl Drop for RawGuard {
 }
 
 fn main() -> io::Result<()> {
-    let mut world = World::new();
+    let mut world = World::new(MAP_WIDTH, MAP_HEIGHT);
     world.generate();
 
     let mut player = Player::spawn(&world);
@@ -40,10 +42,18 @@ fn main() -> io::Result<()> {
         if let Event::Key(k) = event::read()? {
             match k.code {
                 KeyCode::Char('q') => break,
-                KeyCode::Char('w') => { player.try_move(&world, -1, 0); }
-                KeyCode::Char('s') => { player.try_move(&world, 1, 0); }
-                KeyCode::Char('a') => { player.try_move(&world, 0, -1); }
-                KeyCode::Char('d') => { player.try_move(&world, 0, 1); }
+                KeyCode::Char('w') => {
+                    player.try_move(&world, -1, 0);
+                }
+                KeyCode::Char('s') => {
+                    player.try_move(&world, 1, 0);
+                }
+                KeyCode::Char('a') => {
+                    player.try_move(&world, 0, -1);
+                }
+                KeyCode::Char('d') => {
+                    player.try_move(&world, 0, 1);
+                }
                 _ => {}
             }
         }

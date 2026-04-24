@@ -1,6 +1,6 @@
-use crate::common::{MAP_HEIGHT, MAP_WIDTH};
+use crate::common::{MAP_HEIGHT, MAP_WIDTH, TILE_DOOR, TILE_EXIT, TILE_FLOOR, TILE_WALL};
+use crate::dungeon::World;
 use crate::player::Player;
-use crate::wfc::{World, TILE_ALTAR, TILE_FLOOR, TILE_VOID, TILE_WALL};
 use crossterm::terminal;
 use std::io::{self, Write};
 
@@ -18,12 +18,12 @@ pub fn render_frame(world: &World, player: &Player) -> io::Result<()> {
             if player.y == y && player.x == x {
                 write!(out, "\x1b[38;5;226m@ \x1b[0m")?;
             } else {
-                let tile = world.map[y][x].final_type;
+                let tile = world.map[y][x];
                 let (symbol, color) = match tile {
-                    t if t == TILE_VOID => ("  ", 232),
-                    t if t == TILE_FLOOR => ("· ", 82),
-                    t if t == TILE_WALL => ("██", 196),
-                    t if t == TILE_ALTAR => ("♦ ", 135),
+                    c if c == TILE_FLOOR => ("· ", 82),
+                    c if c == TILE_WALL => ("██", 196),
+                    c if c == TILE_EXIT => ("X ", 226),
+                    c if c == TILE_DOOR => ("/ ", 208),
                     _ => ("?", 255),
                 };
                 write!(out, "\x1b[38;5;{}m{}\x1b[0m", color, symbol)?;
