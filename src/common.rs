@@ -7,6 +7,7 @@ pub const TILE_WALL: char = '█';
 pub const TILE_DOOR: char = '/';
 pub const TILE_EXIT: char = 'X';
 
+#[derive(Clone, Copy, Debug)]
 pub struct Rect {
     pub x: usize,
     pub y: usize,
