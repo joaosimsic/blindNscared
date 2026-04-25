@@ -25,7 +25,7 @@ pub fn render_frame(world: &World, player: &Player) -> io::Result<()> {
                     c if c == TILE_WALL => ("██", 196),
                     c if c == TILE_EXIT => ("X ", 226),
                     c if c == TILE_DOOR => ("/ ", 208),
-                    _ => ("?", 255),
+                    _ => ("? ", 255),
                 };
                 write!(out, "\x1b[38;5;{}m{}\x1b[0m", color, symbol)?;
             }

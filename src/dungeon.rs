@@ -1,5 +1,5 @@
 use crate::common::{Rect, TILE_DOOR, TILE_FLOOR, TILE_WALL};
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 pub struct World {
     pub map: Vec<Vec<char>>,
@@ -12,9 +12,9 @@ struct Room {
     rect: Rect,
     #[allow(dead_code)]
     id: usize,
-    #[allow(dead_code)]
-    is_hallway: bool,
 }
+
+const MIN_DIM: usize = 5;
 
 impl World {
     pub fn new(width: usize, height: usize) -> Self {
@@ -28,93 +28,272 @@ impl World {
     pub fn generate(&mut self) {
         self.fill_rect(0, 0, self.width, self.height, ' ');
 
-        let hx = 5 + rand::random::<usize>() % (self.width.saturating_sub(30).max(1));
-        let hy = 5 + rand::random::<usize>() % (self.height.saturating_sub(30).max(1));
-
-        let mut house_rects = vec![Rect {
-            x: hx,
-            y: hy,
-            w: 10,
-            h: 10,
-        }];
-
-        let num_extensions = 1 + rand::random::<usize>() % 3;
-        for _ in 0..num_extensions {
-            let parent = house_rects[rand::random::<usize>() % house_rects.len()];
-            let side = rand::random::<usize>() % 4;
-            let ew = 6 + rand::random::<usize>() % 4;
-            let eh = 6 + rand::random::<usize>() % 4;
-
-            let ext = match side {
-                0 => Rect {
-                    x: parent.x + parent.w - 1,
-                    y: parent.y,
-                    w: ew,
-                    h: eh,
-                }, 
-                1 => Rect {
-                    x: parent.x.saturating_sub(ew) + 1,
-                    y: parent.y,
-                    w: ew,
-                    h: eh,
-                }, 
-                2 => Rect {
-                    x: parent.x,
-                    y: parent.y + parent.h - 1,
-                    w: ew,
-                    h: eh,
-                }, 
-                _ => Rect {
-                    x: parent.x,
-                    y: parent.y.saturating_sub(eh) + 1,
-                    w: ew,
-                    h: eh,
-                }, 
-            };
-            house_rects.push(ext);
-        }
+        let footprint = self.gen_footprint();
 
         let mut rooms = Vec::new();
-        for rect in &house_rects {
+        for rect in &footprint {
             self.recursive_slice(rect.x, rect.y, rect.w, rect.h, &mut rooms);
         }
 
-        for r in &house_rects {
+        for r in &footprint {
             self.fill_rect(r.x, r.y, r.w, r.h, TILE_FLOOR);
         }
-
-        for r in &house_rects {
+        for r in &footprint {
             self.draw_rect_border(r.x, r.y, r.w, r.h);
         }
-
         for r in &rooms {
             self.draw_rect_border(r.rect.x, r.rect.y, r.rect.w, r.rect.h);
         }
 
-        let adj = self.get_adjacency_map(&rooms);
-        for (u, neighbors) in &adj {
-            for v in neighbors {
-                if u < v {
-                    self.place_smart_door(&rooms[*u], &rooms[*v]);
+        self.connect_rooms(&rooms);
+        self.place_outer_entrance(&footprint);
+        self.place_hub(&rooms);
+    }
+
+    fn gen_footprint(&self) -> Vec<Rect> {
+        let core_w = 10;
+        let core_h = 10;
+        let max_x = self.width.saturating_sub(core_w + 5).max(6);
+        let max_y = self.height.saturating_sub(core_h + 5).max(6);
+        let hx = 5 + rand::random::<usize>() % max_x.saturating_sub(5).max(1);
+        let hy = 5 + rand::random::<usize>() % max_y.saturating_sub(5).max(1);
+
+        let mut rects = vec![Rect {
+            x: hx,
+            y: hy,
+            w: core_w,
+            h: core_h,
+        }];
+
+        let target = 1 + rand::random::<usize>() % 3;
+        let mut placed = 0;
+        let mut attempts = 0;
+        while placed < target && attempts < 40 {
+            attempts += 1;
+            let parent = rects[rand::random::<usize>() % rects.len()];
+            let side = rand::random::<usize>() % 4;
+            let ew = 7 + rand::random::<usize>() % 4;
+            let eh = 7 + rand::random::<usize>() % 4;
+
+            let ext = match side {
+                0 => Rect {
+                    x: parent.x + parent.w - 1,
+                    y: parent.y + parent.h / 2 - eh / 2,
+                    w: ew,
+                    h: eh,
+                },
+                1 => {
+                    if parent.x + 1 < ew {
+                        continue;
+                    }
+                    Rect {
+                        x: parent.x + 1 - ew,
+                        y: parent.y + parent.h / 2 - eh / 2,
+                        w: ew,
+                        h: eh,
+                    }
+                }
+                2 => Rect {
+                    x: parent.x + parent.w / 2 - ew / 2,
+                    y: parent.y + parent.h - 1,
+                    w: ew,
+                    h: eh,
+                },
+                _ => {
+                    if parent.y + 1 < eh {
+                        continue;
+                    }
+                    Rect {
+                        x: parent.x + parent.w / 2 - ew / 2,
+                        y: parent.y + 1 - eh,
+                        w: ew,
+                        h: eh,
+                    }
+                }
+            };
+
+            if ext.x == 0 || ext.y == 0 {
+                continue;
+            }
+            if ext.x + ext.w >= self.width || ext.y + ext.h >= self.height {
+                continue;
+            }
+            if rects.iter().any(|r| Self::overlaps_interior(r, &ext)) {
+                continue;
+            }
+
+            rects.push(ext);
+            placed += 1;
+        }
+
+        rects
+    }
+
+    fn recursive_slice(&self, x: usize, y: usize, w: usize, h: usize, rooms: &mut Vec<Room>) {
+        let can_v = w >= MIN_DIM * 2 - 1;
+        let can_h = h >= MIN_DIM * 2 - 1;
+
+        if can_v && (rand::random::<bool>() || !can_h) {
+            let span = w + 1 - 2 * MIN_DIM;
+            let split = MIN_DIM + rand::random::<usize>() % (span + 1);
+            self.recursive_slice(x, y, split, h, rooms);
+            self.recursive_slice(x + split - 1, y, w - split + 1, h, rooms);
+        } else if can_h {
+            let span = h + 1 - 2 * MIN_DIM;
+            let split = MIN_DIM + rand::random::<usize>() % (span + 1);
+            self.recursive_slice(x, y, w, split, rooms);
+            self.recursive_slice(x, y + split - 1, w, h - split + 1, rooms);
+        } else {
+            rooms.push(Room {
+                rect: Rect { x, y, w, h },
+                id: rooms.len(),
+            });
+        }
+    }
+
+    fn connect_rooms(&mut self, rooms: &[Room]) {
+        let mut adj: HashMap<usize, Vec<(usize, (usize, usize))>> = HashMap::new();
+        for i in 0..rooms.len() {
+            for j in i + 1..rooms.len() {
+                if let Some(pos) = self.find_door_pos(&rooms[i].rect, &rooms[j].rect) {
+                    adj.entry(i).or_default().push((j, pos));
+                    adj.entry(j).or_default().push((i, pos));
                 }
             }
         }
 
-        self.place_outer_entrance(&house_rects[0]);
+        let mut visited = HashSet::new();
+        for start in 0..rooms.len() {
+            if visited.contains(&start) {
+                continue;
+            }
+            let mut q = VecDeque::new();
+            q.push_back(start);
+            visited.insert(start);
+            while let Some(u) = q.pop_front() {
+                if let Some(neighbors) = adj.get(&u) {
+                    for &(v, (px, py)) in neighbors {
+                        if visited.contains(&v) {
+                            continue;
+                        }
+                        if self.map[py][px] == TILE_WALL {
+                            self.map[py][px] = TILE_DOOR;
+                        }
+                        visited.insert(v);
+                        q.push_back(v);
+                    }
+                }
+            }
+        }
+    }
 
-        if let Some(hub_idx) = self.find_highest_centrality(&rooms, &adj) {
-            let hub = &rooms[hub_idx];
+    fn find_door_pos(&self, a: &Rect, b: &Rect) -> Option<(usize, usize)> {
+        let vshared = if a.x + a.w - 1 == b.x {
+            Some(a.x + a.w - 1)
+        } else if b.x + b.w - 1 == a.x {
+            Some(a.x)
+        } else {
+            None
+        };
+        if let Some(col) = vshared {
+            let y0 = a.y.max(b.y) + 1;
+            let y1 = (a.y + a.h).min(b.y + b.h).saturating_sub(1);
+            if y1 > y0 && col > 0 && col + 1 < self.width {
+                let cands: Vec<usize> = (y0..y1)
+                    .filter(|&y| {
+                        self.map[y][col - 1] == TILE_FLOOR
+                            && self.map[y][col + 1] == TILE_FLOOR
+                    })
+                    .collect();
+                if !cands.is_empty() {
+                    let pick = cands[rand::random::<usize>() % cands.len()];
+                    return Some((col, pick));
+                }
+            }
+        }
+
+        let hshared = if a.y + a.h - 1 == b.y {
+            Some(a.y + a.h - 1)
+        } else if b.y + b.h - 1 == a.y {
+            Some(a.y)
+        } else {
+            None
+        };
+        if let Some(row) = hshared {
+            let x0 = a.x.max(b.x) + 1;
+            let x1 = (a.x + a.w).min(b.x + b.w).saturating_sub(1);
+            if x1 > x0 && row > 0 && row + 1 < self.height {
+                let cands: Vec<usize> = (x0..x1)
+                    .filter(|&x| {
+                        self.map[row - 1][x] == TILE_FLOOR
+                            && self.map[row + 1][x] == TILE_FLOOR
+                    })
+                    .collect();
+                if !cands.is_empty() {
+                    let pick = cands[rand::random::<usize>() % cands.len()];
+                    return Some((pick, row));
+                }
+            }
+        }
+
+        None
+    }
+
+    fn place_outer_entrance(&mut self, footprint: &[Rect]) {
+        let inside = |x: usize, y: usize| -> bool {
+            footprint
+                .iter()
+                .any(|r| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h)
+        };
+
+        let mut cands: Vec<(usize, usize)> = Vec::new();
+        for r in footprint {
+            for x in r.x + 1..r.x + r.w - 1 {
+                if r.y > 0 && self.map[r.y][x] == TILE_WALL && !inside(x, r.y - 1) {
+                    cands.push((x, r.y));
+                }
+                let by = r.y + r.h - 1;
+                if by + 1 < self.height
+                    && self.map[by][x] == TILE_WALL
+                    && !inside(x, by + 1)
+                {
+                    cands.push((x, by));
+                }
+            }
+            for y in r.y + 1..r.y + r.h - 1 {
+                if r.x > 0 && self.map[y][r.x] == TILE_WALL && !inside(r.x - 1, y) {
+                    cands.push((r.x, y));
+                }
+                let rx = r.x + r.w - 1;
+                if rx + 1 < self.width
+                    && self.map[y][rx] == TILE_WALL
+                    && !inside(rx + 1, y)
+                {
+                    cands.push((rx, y));
+                }
+            }
+        }
+        if cands.is_empty() {
+            return;
+        }
+        let (x, y) = cands[rand::random::<usize>() % cands.len()];
+        self.map[y][x] = TILE_DOOR;
+    }
+
+    fn place_hub(&mut self, rooms: &[Room]) {
+        if let Some(hub) = rooms.iter().max_by_key(|r| r.rect.w * r.rect.h) {
             let cx = hub.rect.x + hub.rect.w / 2;
             let cy = hub.rect.y + hub.rect.h / 2;
             self.safe_set_tile(cx, cy, 'K');
         }
     }
 
-    fn place_outer_entrance(&mut self, core: &Rect) {
-        let door_x = core.x + 1 + rand::random::<usize>() % (core.w - 2);
-        if core.y < self.height && door_x < self.width {
-            self.map[core.y][door_x] = TILE_DOOR;
-        }
+    fn overlaps_interior(a: &Rect, b: &Rect) -> bool {
+        let ix_lo = a.x.max(b.x);
+        let ix_hi = (a.x + a.w).min(b.x + b.w);
+        let iy_lo = a.y.max(b.y);
+        let iy_hi = (a.y + a.h).min(b.y + b.h);
+        ix_hi > ix_lo + 1 && iy_hi > iy_lo + 1
     }
 
     fn draw_rect_border(&mut self, x: usize, y: usize, w: usize, h: usize) {
@@ -126,100 +305,6 @@ impl World {
             self.safe_set_tile(x, row, TILE_WALL);
             self.safe_set_tile(x + w - 1, row, TILE_WALL);
         });
-    }
-
-    fn recursive_slice(&self, x: usize, y: usize, w: usize, h: usize, rooms: &mut Vec<Room>) {
-        let min_dim = 5;
-        let can_split_v = w >= min_dim * 2 - 1;
-        let can_split_h = h >= min_dim * 2 - 1;
-
-        if can_split_v && (rand::random::<bool>() || !can_split_h) {
-            let split = min_dim + rand::random::<usize>() % (w - min_dim);
-            self.recursive_slice(x, y, split, h, rooms);
-            self.recursive_slice(x + split - 1, y, w - split + 1, h, rooms);
-        } else if can_split_h {
-            let split = min_dim + rand::random::<usize>() % (h - min_dim);
-            self.recursive_slice(x, y, w, split, rooms);
-            self.recursive_slice(x, y + split - 1, w, h - split + 1, rooms);
-        } else {
-            rooms.push(Room {
-                rect: Rect { x, y, w, h },
-                id: rooms.len(),
-                is_hallway: false,
-            });
-        }
-    }
-
-    fn get_adjacency_map(&self, rooms: &[Room]) -> std::collections::HashMap<usize, Vec<usize>> {
-        let mut adj = std::collections::HashMap::new();
-        for i in 0..rooms.len() {
-            for j in i + 1..rooms.len() {
-                if self.are_adjacent(&rooms[i].rect, &rooms[j].rect) {
-                    adj.entry(i).or_insert_with(Vec::new).push(j);
-                    adj.entry(j).or_insert_with(Vec::new).push(i);
-                }
-            }
-        }
-        adj
-    }
-
-    fn are_adjacent(&self, a: &Rect, b: &Rect) -> bool {
-        let inter_x = a.x.max(b.x) < (a.x + a.w).min(b.x + b.w);
-        let inter_y = a.y.max(b.y) < (a.y + a.h).min(b.y + b.h);
-
-        let touch_x = (a.x + a.w - 1 == b.x) || (b.x + b.w - 1 == a.x);
-        let touch_y = (a.y + a.h - 1 == b.y) || (b.y + b.h - 1 == a.y);
-
-        (inter_x && touch_y) || (inter_y && touch_x)
-    }
-
-    fn find_highest_centrality(
-        &self,
-        rooms: &[Room],
-        adj: &std::collections::HashMap<usize, Vec<usize>>,
-    ) -> Option<usize> {
-        let mut scores = vec![0; rooms.len()];
-        for start_node in 0..rooms.len() {
-            let mut q = VecDeque::new();
-            q.push_back(start_node);
-            let mut visited = HashSet::new();
-            visited.insert(start_node);
-
-            while let Some(curr) = q.pop_front() {
-                if let Some(neighbors) = adj.get(&curr) {
-                    for &next in neighbors {
-                        if !visited.contains(&next) {
-                            scores[curr] += 1;
-                            visited.insert(next);
-                            q.push_back(next);
-                        }
-                    }
-                }
-            }
-        }
-        scores
-            .iter()
-            .enumerate()
-            .max_by_key(|&(_, &score)| score) 
-            .map(|(i, _)| i)
-    }
-
-    fn place_smart_door(&mut self, r1: &Room, r2: &Room) {
-        let a = &r1.rect;
-        let b = &r2.rect;
-
-        let x_overlap = a.x.max(b.x)..(a.x + a.w).min(b.x + b.w);
-        let y_overlap = a.y.max(b.y)..(a.y + a.h).min(b.y + b.h);
-
-        if x_overlap.len() > 2 && (a.y + a.h - 1 == b.y || b.y + b.h - 1 == a.y) {
-            let py = if a.y + a.h - 1 == b.y { b.y } else { a.y };
-            let px = x_overlap.start + 1 + rand::random::<usize>() % (x_overlap.len() - 2);
-            self.safe_set_tile(px, py, TILE_DOOR);
-        } else if y_overlap.len() > 2 && (a.x + a.w - 1 == b.x || b.x + b.w - 1 == a.x) {
-            let px = if a.x + a.w - 1 == b.x { b.x } else { a.x };
-            let py = y_overlap.start + 1 + rand::random::<usize>() % (y_overlap.len() - 2);
-            self.safe_set_tile(px, py, TILE_DOOR);
-        }
     }
 
     fn safe_set_tile(&mut self, x: usize, y: usize, tile: char) {
