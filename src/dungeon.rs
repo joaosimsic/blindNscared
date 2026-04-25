@@ -28,52 +28,99 @@ impl World {
     pub fn generate(&mut self) {
         self.fill_rect(0, 0, self.width, self.height, ' ');
 
-        let footprint = self.gen_footprint();
+        let houses = self.gen_houses();
 
-        let mut rooms = Vec::new();
-        for rect in &footprint {
-            self.recursive_slice(rect.x, rect.y, rect.w, rect.h, &mut rooms);
-        }
-
-        for r in &footprint {
-            self.fill_rect(r.x, r.y, r.w, r.h, TILE_FLOOR);
-        }
-        for r in &footprint {
-            self.draw_rect_border(r.x, r.y, r.w, r.h);
-        }
-        for r in &rooms {
-            self.draw_rect_border(r.rect.x, r.rect.y, r.rect.w, r.rect.h);
+        let mut all_rooms: Vec<Vec<Room>> = Vec::with_capacity(houses.len());
+        for footprint in &houses {
+            let mut rooms = Vec::new();
+            for rect in footprint {
+                self.recursive_slice(rect.x, rect.y, rect.w, rect.h, &mut rooms);
+            }
+            all_rooms.push(rooms);
         }
 
-        self.connect_rooms(&rooms);
-        self.place_outer_entrance(&footprint);
-        self.place_hub(&rooms);
+        for footprint in &houses {
+            for r in footprint {
+                self.fill_rect(r.x, r.y, r.w, r.h, TILE_FLOOR);
+            }
+        }
+        for footprint in &houses {
+            for r in footprint {
+                self.draw_rect_border(r.x, r.y, r.w, r.h);
+            }
+        }
+        for rooms in &all_rooms {
+            for r in rooms {
+                self.draw_rect_border(r.rect.x, r.rect.y, r.rect.w, r.rect.h);
+            }
+        }
+
+        for rooms in &all_rooms {
+            self.connect_rooms(rooms);
+        }
+        for footprint in &houses {
+            self.place_outer_entrances(footprint);
+        }
+
+        let largest = all_rooms
+            .iter()
+            .flatten()
+            .max_by_key(|r| r.rect.w * r.rect.h);
+        if let Some(hub) = largest {
+            let cx = hub.rect.x + hub.rect.w / 2;
+            let cy = hub.rect.y + hub.rect.h / 2;
+            self.safe_set_tile(cx, cy, 'K');
+        }
     }
 
-    fn gen_footprint(&self) -> Vec<Rect> {
-        let core_w = 10;
-        let core_h = 10;
-        let max_x = self.width.saturating_sub(core_w + 5).max(6);
-        let max_y = self.height.saturating_sub(core_h + 5).max(6);
-        let hx = 5 + rand::random::<usize>() % max_x.saturating_sub(5).max(1);
-        let hy = 5 + rand::random::<usize>() % max_y.saturating_sub(5).max(1);
+    fn gen_houses(&self) -> Vec<Vec<Rect>> {
+        let target_houses = 2 + rand::random::<usize>() % 3;
+        let mut houses: Vec<Vec<Rect>> = Vec::new();
+        let mut attempts = 0;
+        while houses.len() < target_houses && attempts < 60 {
+            attempts += 1;
+            if let Some(footprint) = self.try_gen_footprint(&houses) {
+                houses.push(footprint);
+            }
+        }
+        if houses.is_empty() {
+            if let Some(fp) = self.try_gen_footprint(&[]) {
+                houses.push(fp);
+            }
+        }
+        houses
+    }
 
-        let mut rects = vec![Rect {
+    fn try_gen_footprint(&self, existing: &[Vec<Rect>]) -> Option<Vec<Rect>> {
+        let core_w = 8 + rand::random::<usize>() % 4;
+        let core_h = 8 + rand::random::<usize>() % 4;
+        if self.width < core_w + 6 || self.height < core_h + 6 {
+            return None;
+        }
+        let hx = 3 + rand::random::<usize>() % (self.width - core_w - 4);
+        let hy = 3 + rand::random::<usize>() % (self.height - core_h - 4);
+
+        let core = Rect {
             x: hx,
             y: hy,
             w: core_w,
             h: core_h,
-        }];
+        };
+        if Self::overlaps_any_house(&core, existing, 2) {
+            return None;
+        }
+
+        let mut rects = vec![core];
 
         let target = 1 + rand::random::<usize>() % 3;
         let mut placed = 0;
         let mut attempts = 0;
-        while placed < target && attempts < 40 {
+        while placed < target && attempts < 30 {
             attempts += 1;
             let parent = rects[rand::random::<usize>() % rects.len()];
             let side = rand::random::<usize>() % 4;
-            let ew = 7 + rand::random::<usize>() % 4;
-            let eh = 7 + rand::random::<usize>() % 4;
+            let ew = 6 + rand::random::<usize>() % 4;
+            let eh = 6 + rand::random::<usize>() % 4;
 
             let ext = match side {
                 0 => Rect {
@@ -121,12 +168,34 @@ impl World {
             if rects.iter().any(|r| Self::overlaps_interior(r, &ext)) {
                 continue;
             }
+            if Self::overlaps_any_house(&ext, existing, 2) {
+                continue;
+            }
 
             rects.push(ext);
             placed += 1;
         }
 
-        rects
+        Some(rects)
+    }
+
+    fn overlaps_any_house(rect: &Rect, houses: &[Vec<Rect>], gap: usize) -> bool {
+        let pad_x = rect.x.saturating_sub(gap);
+        let pad_y = rect.y.saturating_sub(gap);
+        let pad = Rect {
+            x: pad_x,
+            y: pad_y,
+            w: rect.w + (rect.x - pad_x) + gap,
+            h: rect.h + (rect.y - pad_y) + gap,
+        };
+        houses
+            .iter()
+            .flatten()
+            .any(|r| Self::rects_intersect(&pad, r))
+    }
+
+    fn rects_intersect(a: &Rect, b: &Rect) -> bool {
+        a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
     }
 
     fn recursive_slice(&self, x: usize, y: usize, w: usize, h: usize, rooms: &mut Vec<Room>) {
@@ -346,7 +415,7 @@ impl World {
         None
     }
 
-    fn place_outer_entrance(&mut self, footprint: &[Rect]) {
+    fn place_outer_entrances(&mut self, footprint: &[Rect]) {
         let inside = |x: usize, y: usize| -> bool {
             footprint
                 .iter()
@@ -393,15 +462,31 @@ impl World {
         if cands.is_empty() {
             return;
         }
-        let (x, y) = cands[rand::random::<usize>() % cands.len()];
-        self.map[y][x] = TILE_DOOR;
-    }
 
-    fn place_hub(&mut self, rooms: &[Room]) {
-        if let Some(hub) = rooms.iter().max_by_key(|r| r.rect.w * r.rect.h) {
-            let cx = hub.rect.x + hub.rect.w / 2;
-            let cy = hub.rect.y + hub.rect.h / 2;
-            self.safe_set_tile(cx, cy, 'K');
+        let target = 1 + rand::random::<usize>() % 3;
+        const MIN_SPACING: usize = 5;
+        let mut chosen: Vec<(usize, usize)> = Vec::new();
+        let mut shuffled = cands.clone();
+        for i in (1..shuffled.len()).rev() {
+            let j = rand::random::<usize>() % (i + 1);
+            shuffled.swap(i, j);
+        }
+        for c in shuffled {
+            if chosen.len() >= target {
+                break;
+            }
+            let dist_ok = chosen.iter().all(|&(cx, cy)| {
+                cx.abs_diff(c.0) + cy.abs_diff(c.1) >= MIN_SPACING
+            });
+            if dist_ok {
+                chosen.push(c);
+            }
+        }
+        if chosen.is_empty() {
+            chosen.push(cands[rand::random::<usize>() % cands.len()]);
+        }
+        for (x, y) in chosen {
+            self.map[y][x] = TILE_DOOR;
         }
     }
 
