@@ -152,7 +152,9 @@ impl World {
     }
 
     fn connect_rooms(&mut self, rooms: &[Room]) {
-        let mut adj: HashMap<usize, Vec<(usize, (usize, usize))>> = HashMap::new();
+        const MIN_DOOR_SPACING: usize = 3;
+
+        let mut adj: HashMap<usize, Vec<(usize, (usize, usize, bool))>> = HashMap::new();
         for i in 0..rooms.len() {
             for j in i + 1..rooms.len() {
                 if let Some(pos) = self.find_door_pos(&rooms[i].rect, &rooms[j].rect) {
@@ -161,6 +163,21 @@ impl World {
                 }
             }
         }
+
+        // placed doors keyed by wall line: (axis, position) -> sorted list of offsets
+        // axis true = vertical wall (col fixed), false = horizontal wall (row fixed)
+        let mut placed: HashMap<(bool, usize), Vec<usize>> = HashMap::new();
+
+        let too_close = |placed: &HashMap<(bool, usize), Vec<usize>>,
+                         axis: bool,
+                         pos: usize,
+                         off: usize|
+         -> bool {
+            placed
+                .get(&(axis, pos))
+                .map(|v| v.iter().any(|&o| o.abs_diff(off) < MIN_DOOR_SPACING))
+                .unwrap_or(false)
+        };
 
         let mut visited = HashSet::new();
         for start in 0..rooms.len() {
@@ -172,13 +189,38 @@ impl World {
             visited.insert(start);
             while let Some(u) = q.pop_front() {
                 if let Some(neighbors) = adj.get(&u) {
-                    for &(v, (px, py)) in neighbors {
+                    let mut ns = neighbors.clone();
+                    ns.sort_by_key(|&(v, _)| v);
+                    for (v, (px, py, vert)) in ns {
                         if visited.contains(&v) {
                             continue;
+                        }
+                        let pos = if vert { px } else { py };
+                        let off = if vert { py } else { px };
+                        if too_close(&placed, vert, pos, off) {
+                            // try alternate position on same wall
+                            if let Some(alt) = self.find_door_pos_avoiding(
+                                &rooms[u].rect,
+                                &rooms[v].rect,
+                                &placed,
+                                MIN_DOOR_SPACING,
+                            ) {
+                                let (apx, apy, avert) = alt;
+                                if self.map[apy][apx] == TILE_WALL {
+                                    self.map[apy][apx] = TILE_DOOR;
+                                }
+                                let apos = if avert { apx } else { apy };
+                                let aoff = if avert { apy } else { apx };
+                                placed.entry((avert, apos)).or_default().push(aoff);
+                                visited.insert(v);
+                                q.push_back(v);
+                                continue;
+                            }
                         }
                         if self.map[py][px] == TILE_WALL {
                             self.map[py][px] = TILE_DOOR;
                         }
+                        placed.entry((vert, pos)).or_default().push(off);
                         visited.insert(v);
                         q.push_back(v);
                     }
@@ -187,7 +229,7 @@ impl World {
         }
     }
 
-    fn find_door_pos(&self, a: &Rect, b: &Rect) -> Option<(usize, usize)> {
+    fn find_door_pos(&self, a: &Rect, b: &Rect) -> Option<(usize, usize, bool)> {
         let vshared = if a.x + a.w - 1 == b.x {
             Some(a.x + a.w - 1)
         } else if b.x + b.w - 1 == a.x {
@@ -206,8 +248,8 @@ impl World {
                     })
                     .collect();
                 if !cands.is_empty() {
-                    let pick = cands[rand::random::<usize>() % cands.len()];
-                    return Some((col, pick));
+                    let pick = cands[cands.len() / 2];
+                    return Some((col, pick, true));
                 }
             }
         }
@@ -230,8 +272,73 @@ impl World {
                     })
                     .collect();
                 if !cands.is_empty() {
-                    let pick = cands[rand::random::<usize>() % cands.len()];
-                    return Some((pick, row));
+                    let pick = cands[cands.len() / 2];
+                    return Some((pick, row, false));
+                }
+            }
+        }
+
+        None
+    }
+
+    fn find_door_pos_avoiding(
+        &self,
+        a: &Rect,
+        b: &Rect,
+        placed: &HashMap<(bool, usize), Vec<usize>>,
+        spacing: usize,
+    ) -> Option<(usize, usize, bool)> {
+        let far_enough = |axis: bool, pos: usize, off: usize| -> bool {
+            placed
+                .get(&(axis, pos))
+                .map(|v| v.iter().all(|&o| o.abs_diff(off) >= spacing))
+                .unwrap_or(true)
+        };
+
+        let vshared = if a.x + a.w - 1 == b.x {
+            Some(a.x + a.w - 1)
+        } else if b.x + b.w - 1 == a.x {
+            Some(a.x)
+        } else {
+            None
+        };
+        if let Some(col) = vshared {
+            let y0 = a.y.max(b.y) + 1;
+            let y1 = (a.y + a.h).min(b.y + b.h).saturating_sub(1);
+            if y1 > y0 && col > 0 && col + 1 < self.width {
+                let cands: Vec<usize> = (y0..y1)
+                    .filter(|&y| {
+                        self.map[y][col - 1] == TILE_FLOOR
+                            && self.map[y][col + 1] == TILE_FLOOR
+                            && far_enough(true, col, y)
+                    })
+                    .collect();
+                if !cands.is_empty() {
+                    return Some((col, cands[cands.len() / 2], true));
+                }
+            }
+        }
+
+        let hshared = if a.y + a.h - 1 == b.y {
+            Some(a.y + a.h - 1)
+        } else if b.y + b.h - 1 == a.y {
+            Some(a.y)
+        } else {
+            None
+        };
+        if let Some(row) = hshared {
+            let x0 = a.x.max(b.x) + 1;
+            let x1 = (a.x + a.w).min(b.x + b.w).saturating_sub(1);
+            if x1 > x0 && row > 0 && row + 1 < self.height {
+                let cands: Vec<usize> = (x0..x1)
+                    .filter(|&x| {
+                        self.map[row - 1][x] == TILE_FLOOR
+                            && self.map[row + 1][x] == TILE_FLOOR
+                            && far_enough(false, row, x)
+                    })
+                    .collect();
+                if !cands.is_empty() {
+                    return Some((cands[cands.len() / 2], row, false));
                 }
             }
         }
@@ -249,25 +356,35 @@ impl World {
         let mut cands: Vec<(usize, usize)> = Vec::new();
         for r in footprint {
             for x in r.x + 1..r.x + r.w - 1 {
-                if r.y > 0 && self.map[r.y][x] == TILE_WALL && !inside(x, r.y - 1) {
+                if r.y > 0
+                    && self.map[r.y][x] == TILE_WALL
+                    && !inside(x, r.y - 1)
+                    && self.map[r.y + 1][x] == TILE_FLOOR
+                {
                     cands.push((x, r.y));
                 }
                 let by = r.y + r.h - 1;
                 if by + 1 < self.height
                     && self.map[by][x] == TILE_WALL
                     && !inside(x, by + 1)
+                    && self.map[by - 1][x] == TILE_FLOOR
                 {
                     cands.push((x, by));
                 }
             }
             for y in r.y + 1..r.y + r.h - 1 {
-                if r.x > 0 && self.map[y][r.x] == TILE_WALL && !inside(r.x - 1, y) {
+                if r.x > 0
+                    && self.map[y][r.x] == TILE_WALL
+                    && !inside(r.x - 1, y)
+                    && self.map[y][r.x + 1] == TILE_FLOOR
+                {
                     cands.push((r.x, y));
                 }
                 let rx = r.x + r.w - 1;
                 if rx + 1 < self.width
                     && self.map[y][rx] == TILE_WALL
                     && !inside(rx + 1, y)
+                    && self.map[y][rx - 1] == TILE_FLOOR
                 {
                     cands.push((rx, y));
                 }
